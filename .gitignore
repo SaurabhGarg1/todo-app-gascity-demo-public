@@ -35,3 +35,10 @@ dist-ssr
 !.beads/identity.toml
 .gc/
 .cursor/
+
+# Formula worktrees and check output. expectations.json stays tracked.
+worktrees/
+validation/local.txt
+validation/pages.txt
+validation/publish.json
+validation/review.json

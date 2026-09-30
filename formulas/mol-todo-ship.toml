@@ -1,0 +1,298 @@
+description = """
+Ship one todo-app-2 requirement: implement and test it, review it, publish
+it to GitHub Pages, then fix what Playwright finds.
+
+Sling a requirement bead at the cursor pool with this formula. Do not sling
+the bead bare — the pool's default formula is mol-do-work.
+
+```bash
+gc sling todo-app-2/cursor <bead-id> --on mol-todo-ship
+```
+
+Git and `gh` do the push and the Pages setup. GitHub MCP is optional.
+
+## Variables
+
+| Variable | Source | Description |
+|----------|--------|-------------|
+| convoy_id | runtime | Input convoy tracking the single requirement bead |
+| worker | caller | Pool that runs every step (default `todo-app-2/cursor`) |
+| base_branch | caller | Branch the worktree starts from (default `main`) |
+| escalation_target | caller | Mail recipient when a step is blocked (default `human`) |
+"""
+formula = "mol-todo-ship"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+[vars.worker]
+description = "Pool that executes every step."
+default = "todo-app-2/cursor"
+
+[vars.base_branch]
+description = "Branch the worktree is created from."
+default = "main"
+
+[vars.escalation_target]
+description = "Mail recipient when work is blocked."
+default = "human"
+
+[[steps]]
+id = "implement"
+title = "Implement the requirement and its tests"
+description = """
+Build the requirement in its own git worktree, add tests, and commit.
+Do not push. Do not close the requirement bead.
+
+**1. Resolve the requirement:**
+
+```bash
+CONVOY_STATUS=$(gc convoy status {{convoy_id}} --json)
+WORK_BEAD_ID=$(printf '%s' "$CONVOY_STATUS" | jq -r 'if (.children | length) == 1 then .children[0].id else empty end')
+if [ -z "$WORK_BEAD_ID" ]; then
+  echo "mol-todo-ship requires an input convoy with exactly one tracked member" >&2
+  exit 1
+fi
+gc bd show "$WORK_BEAD_ID"
+gc bd update "$WORK_BEAD_ID" --claim
+```
+
+Read the title and description. That is the requirement.
+
+**2. Reuse or create the worktree** on `{{base_branch}}`:
+
+```bash
+WORKTREE=$(gc bd show "$WORK_BEAD_ID" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.work_dir"] // .metadata.work_dir // empty')
+if [ -z "$WORKTREE" ] || [ ! -d "$WORKTREE" ]; then
+  git fetch --prune origin || true
+  WORKTREE="$(pwd)/worktrees/$WORK_BEAD_ID"
+  git worktree add "$WORKTREE" --detach origin/{{base_branch}} || git worktree add "$WORKTREE" --detach {{base_branch}}
+fi
+cd "$WORKTREE"
+```
+
+Record the path on the requirement and on this workflow root so later steps
+and the check scripts use the same tree:
+
+```bash
+ROOT_ID=$(gc bd show "${GC_BEAD_ID}" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+gc bd update "$WORK_BEAD_ID" --set-metadata gc.work_dir="$WORKTREE" --set-metadata work_dir="$WORKTREE"
+if [ -n "$ROOT_ID" ]; then
+  gc bd update "$ROOT_ID" --set-metadata gc.work_dir="$WORKTREE" --set-metadata work_dir="$WORKTREE"
+fi
+```
+
+**3. Implement.** If `validation/local.txt` exists, it is the failure from
+the previous check. Fix that before adding anything new. Follow the repo's
+React, Vite, and TypeScript conventions. Add or update a Vitest test that
+fails if the requirement is missing.
+
+Write `validation/expectations.json` for the live site check. `must_contain`
+is text the deployed page must show. `selectors` are CSS selectors that must
+match. Include `#root` plus whatever the requirement makes visible:
+
+```json
+{"must_contain":["the new label"],"selectors":["#root","[data-testid=new-control]"]}
+```
+
+**4. Install, commit, and close this step.** Do not close `$WORK_BEAD_ID`.
+
+```bash
+npm install
+git add -A
+git status --short
+git commit -m "feat: <requirement summary>"
+gc bd update "${GC_BEAD_ID}" --set-metadata gc.outcome=pass --status=closed --append-notes "Implemented in $WORKTREE."
+```
+
+The orchestrator then runs `scripts/check-local.sh` (`npm run test:run` and
+`npm run build`). A nonzero exit starts another attempt of this step, up to
+3. On the next attempt, read `validation/local.txt` and fix it.
+
+If you are blocked, mail `{{escalation_target}}` and stop. Do not close this
+step as pass.
+"""
+metadata = { "gc.run_target" = "{{worker}}" }
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = "scripts/check-local.sh"
+timeout = "10m"
+
+[[steps]]
+id = "review"
+title = "Review the diff"
+needs = ["implement"]
+description = """
+Read the requirement and the diff. Do not edit, commit, or push.
+
+```bash
+CONVOY_STATUS=$(gc convoy status {{convoy_id}} --json)
+WORK_BEAD_ID=$(printf '%s' "$CONVOY_STATUS" | jq -r 'if (.children | length) == 1 then .children[0].id else empty end')
+gc bd show "$WORK_BEAD_ID"
+WORKTREE=$(gc bd show "$WORK_BEAD_ID" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.work_dir"] // .metadata.work_dir // empty')
+cd "$WORKTREE"
+git diff {{base_branch}}
+```
+
+Write `validation/review.json` in the worktree and commit it:
+
+- `{"verdict":"pass","notes":"..."}` when the diff satisfies the requirement and the tests cover it.
+- `{"verdict":"fail","notes":"..."}` when something must change. Name the files and the behavior. Do not fix it in this step.
+
+```bash
+git add validation/review.json
+git commit -m "review: record verdict"
+gc bd update "${GC_BEAD_ID}" --set-metadata gc.outcome=pass --status=closed --append-notes "Review verdict recorded."
+```
+
+Close this step as pass either way. The next step applies a fail verdict.
+"""
+metadata = { "gc.run_target" = "{{worker}}" }
+
+[[steps]]
+id = "fix-review"
+title = "Apply review fixes"
+needs = ["review"]
+description = """
+Make the review verdict true, then let the local check run again.
+
+```bash
+CONVOY_STATUS=$(gc convoy status {{convoy_id}} --json)
+WORK_BEAD_ID=$(printf '%s' "$CONVOY_STATUS" | jq -r 'if (.children | length) == 1 then .children[0].id else empty end')
+WORKTREE=$(gc bd show "$WORK_BEAD_ID" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.work_dir"] // .metadata.work_dir // empty')
+cd "$WORKTREE"
+```
+
+Read `validation/review.json`.
+
+- `verdict` is `pass`: do not change product code. Close this step.
+- `verdict` is `fail`: apply the notes, update tests if the behavior changed, and commit. If `validation/local.txt` exists, fix that output too.
+
+```bash
+gc bd update "${GC_BEAD_ID}" --set-metadata gc.outcome=pass --status=closed --append-notes "Review fixes applied or none required."
+```
+
+Do not push. Do not close `$WORK_BEAD_ID`. The orchestrator runs
+`scripts/check-local.sh` after you close. A failure starts another attempt.
+"""
+metadata = { "gc.run_target" = "{{worker}}" }
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = "scripts/check-local.sh"
+timeout = "10m"
+
+[[steps]]
+id = "publish"
+title = "Push the branch and deploy GitHub Pages"
+needs = ["fix-review"]
+description = """
+Publish once, from the worktree. Use git and `scripts/publish-pages.sh`.
+GitHub MCP is not required. Use it only if it is already connected and the
+script cannot authenticate.
+
+```bash
+CONVOY_STATUS=$(gc convoy status {{convoy_id}} --json)
+WORK_BEAD_ID=$(printf '%s' "$CONVOY_STATUS" | jq -r 'if (.children | length) == 1 then .children[0].id else empty end')
+WORKTREE=$(gc bd show "$WORK_BEAD_ID" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.work_dir"] // .metadata.work_dir // empty')
+cd "$WORKTREE"
+bash scripts/publish-pages.sh
+```
+
+The script pushes the current branch, builds with the GitHub Pages base
+path, force-with-lease pushes `dist/` to `gh-pages`, and writes
+`validation/publish.json` (`url` and `commit`). It tries `gh` to point Pages
+at that branch. `gh-pages` is a build branch; do not force-push any other
+branch yourself.
+
+Confirm `validation/publish.json` exists, then close this step. Do not close
+the requirement bead. If the script fails after its own three push attempts,
+mail `{{escalation_target}}` and do not close this step as pass.
+
+```bash
+gc bd update "${GC_BEAD_ID}" --set-metadata gc.outcome=pass --status=closed --append-notes "Published. See validation/publish.json."
+```
+"""
+metadata = { "gc.run_target" = "{{worker}}" }
+
+[[steps]]
+id = "fix-live"
+title = "Fix failures on the deployed site"
+needs = ["publish"]
+description = """
+Leave the site matching the requirement. The check browses the Pages URL
+with Playwright after you close this step.
+
+```bash
+CONVOY_STATUS=$(gc convoy status {{convoy_id}} --json)
+WORK_BEAD_ID=$(printf '%s' "$CONVOY_STATUS" | jq -r 'if (.children | length) == 1 then .children[0].id else empty end')
+WORKTREE=$(gc bd show "$WORK_BEAD_ID" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.work_dir"] // .metadata.work_dir // empty')
+cd "$WORKTREE"
+```
+
+If `validation/pages.txt` exists, it is the previous Playwright failure. Fix
+the code or the expectations, commit, and publish again:
+
+```bash
+bash scripts/publish-pages.sh
+```
+
+If `validation/pages.txt` does not exist, this is the first attempt. Make
+sure `npx playwright install chromium` has been run in this worktree, then
+close the step so the check can run. Do not close the requirement bead.
+
+```bash
+npx playwright install chromium
+gc bd update "${GC_BEAD_ID}" --set-metadata gc.outcome=pass --status=closed --append-notes "Ready for the Pages check."
+```
+
+`scripts/check-pages.sh` exits 75 while Pages is not serving this commit yet.
+That retry does not spend an attempt. A real mismatch is written to
+`validation/pages.txt` and starts another attempt, up to 3. If you are still
+blocked after that, mail `{{escalation_target}}`.
+"""
+metadata = { "gc.run_target" = "{{worker}}" }
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = "scripts/check-pages.sh"
+timeout = "15m"
+
+[[steps]]
+id = "drain"
+title = "Close the requirement and release the session"
+needs = ["fix-live"]
+description = """
+The Pages check passed. Close the requirement, then release this session.
+
+```bash
+CONVOY_STATUS=$(gc convoy status {{convoy_id}} --json)
+WORK_BEAD_ID=$(printf '%s' "$CONVOY_STATUS" | jq -r 'if (.children | length) == 1 then .children[0].id else empty end')
+WORKTREE=$(gc bd show "$WORK_BEAD_ID" --json | jq -r 'if type == "array" then .[0] else . end | .metadata["gc.work_dir"] // .metadata.work_dir // empty')
+cd "$WORKTREE"
+COMMIT=$(git rev-parse HEAD)
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+URL=$(jq -r '.url // empty' validation/publish.json)
+gc bd update "$WORK_BEAD_ID" \
+  --set-metadata gc.outcome=pass \
+  --set-metadata gc.work_outcome=shipped \
+  --set-metadata gc.work_commit="$COMMIT" \
+  --set-metadata gc.work_branch="$BRANCH" \
+  --set-metadata gc.work_verification="scripts/check-local.sh scripts/check-pages.sh" \
+  --status=closed \
+  --append-notes "Shipped to ${URL}. Commit: ${COMMIT}."
+gc bd update "${GC_BEAD_ID}" --set-metadata gc.outcome=pass --status=closed --notes "Requirement ${WORK_BEAD_ID} shipped."
+gc runtime drain-ack
+```
+"""
+metadata = { "gc.run_target" = "{{worker}}" }
