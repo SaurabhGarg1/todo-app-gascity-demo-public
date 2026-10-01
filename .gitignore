@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -36,9 +41,13 @@ dist-ssr
 .gc/
 .cursor/
 
-# Formula worktrees and check output. expectations.json stays tracked.
+# Formula worktrees
 worktrees/
-validation/local.txt
-validation/pages.txt
-validation/publish.json
-validation/review.json
+
+# Gas City
+.mcp.json
+.gemini/settings.json
+.codex/config.toml
+.cursor/mcp.json
+opencode.json
+mimocode.json
