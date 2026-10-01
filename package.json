@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://trimblesolutionscorporation.github.io/todo-app-gascity-demo",
+  "homepage": "https://curly-doodle-77mvokk.pages.github.io/",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
